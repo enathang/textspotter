@@ -103,6 +103,7 @@ def predict_single_from_all_previous(net_lstm, descriptor, previous_words):
 
 
 def forward_iou(im, net_iou, resize_length, mask_th):
+    ### resize everything
     h, w, c = im.shape
     scale = max(h, w) / float(resize_length)
 
@@ -119,18 +120,18 @@ def forward_iou(im, net_iou, resize_length, mask_th):
     net_iou.blobs['data'].reshape(*im.shape)
     net_iou.blobs['data'].data[...] = im
 
-
     fcn_th_blob = np.zeros((1, 1), dtype=np.float32)
     fcn_th_blob[0, 0] = mask_th
     net_iou.blobs['fcn_th'].reshape(*fcn_th_blob.shape)
     net_iou.blobs['fcn_th'].data[...] = fcn_th_blob
+    ### determine bboxes
     net_iou.forward()
 
     det_bboxes = net_iou.blobs['rois'].data[:, 1:].copy()
 
     det_bboxes[:, :8:2] = det_bboxes[:, :8:2] * scale_w
     det_bboxes[:, 1:8:2] = det_bboxes[:, 1:8:2] * scale_h
-
+    ### determine decoder info
     decoder_reg = net_iou.blobs['decoder'].data
     return det_bboxes, decoder_reg
 
@@ -151,10 +152,10 @@ def forward_reg(decoder_rec, net_rec, det_bboxes, recog_th=0.85):
         for t in range(cfg.max_len):
             input_fea = decoder_rec[:t + 1, i, :]
             input_fea = np.reshape(input_fea, (t + 1, 1, -1))
-            net_rec.blobs['sample_gt_cont'].reshape(1, 1)
-            net_rec.blobs['sample_gt_label_input'].reshape(1, 1)
-            net_rec.blobs['decoder'].reshape(*input_fea.shape)
-            res_probs = predict_single_from_all_previous(net_rec, input_fea, previous_words)
+            net_rec.blobs['sample_gt_cont'].reshape(1, 1) # net_rec
+            net_rec.blobs['sample_gt_label_input'].reshape(1, 1) # net_rec
+            net_rec.blobs['decoder'].reshape(*input_fea.shape) # net_rec
+            res_probs = predict_single_from_all_previous(net_rec, input_fea, previous_words) # net_rec
             ind = np.argmax(res_probs)
 
             if ind == 0:
@@ -177,11 +178,8 @@ def forward_reg(decoder_rec, net_rec, det_bboxes, recog_th=0.85):
 
 
 
-
-
-
-
 if __name__ == '__main__':
+    ### general setup
     args = parse_args()
 
     print 'Called with args:'
@@ -209,10 +207,10 @@ if __name__ == '__main__':
     if not os.path.exists(args.save_dir):
         os.mkdir(args.save_dir)
 
-
     caffe.set_mode_gpu()
     caffe.set_device(0)
 
+    ### create neural nets
     net_iou = caffe.Net(args.prototxt_iou, args.weight, caffe.TEST)
     net_rec = caffe.Net(args.prototxt_lstm, args.weight, caffe.TEST)
 
@@ -222,13 +220,12 @@ if __name__ == '__main__':
     assert len(thresholds) == len(scales), \
         'the length of thresholds and scales should be equal'
 
-    ### get vocabulary
+    ### create vocabulary from dictionary
     generic_voc_file = './dicts/generic_lex.txt'
     generic_vocs = load_dict(generic_voc_file)
-
     dicts = build_voc('./dicts/dict.txt')
 
-    ### forward single image
+    ### do a forward pass of every image
     for ind, image_name in enumerate(imgs_files):
         new_boxes = np.zeros((0, 9))
         words = np.zeros(0)
@@ -237,26 +234,31 @@ if __name__ == '__main__':
         print '%d / %d: ' % (ind+1, len(imgs_files)), image_name
         im = cv2.imread(image_name)
         h, w, c = im.shape
-        ### forward every scale
+
+        ### for every valid image scale, do a forward pass and find the bboxes, words, and word scores
         for k in range(len(scales)):
             image_resize_length = scales[k]
             mask_threshold = thresholds[k]
+            ### detect bounding boxes and decoder features
             det_bboxes, decoder_rec = forward_iou(im, net_iou, image_resize_length, mask_threshold)
             det_num = det_bboxes.shape[0]
             #new_boxes, words, words_score = forward_reg(decoder_rec, net_rec, det_bboxes, cfg.recog_th)
+            ### truncates/regresses bboxes, gets words and word scores
             boxes_k, words_k, words_score_k = forward_reg(decoder_rec, net_rec, det_bboxes, cfg.recog_th)
+            ### if there are new boxes and words, add them to a list of potential boxes/words
             if len(boxes_k) > 0:
                 new_boxes = np.concatenate([new_boxes, np.array(boxes_k)], axis=0)
                 words = np.concatenate([words, np.array(words_k)])
                 words_score = np.concatenate([words_score, np.array(words_score_k)])
 
 
-
+        ### if there are no boxes/words, terminate
         if len(new_boxes) == 0:
             out_name = os.path.join(args.save_dir, 'res_' + image_id + '.txt')
             new_boxes = np.zeros((0, 8))
             words = np.zeros((0, 8))
             write2txt_icdar15_e2e(out_name, new_boxes, words)
+        ### otherwise, filter out boxes that we can't recognize the text in
         else:
             new_boxes = np.array(new_boxes)
             new_boxes = np.reshape(new_boxes, [-1,9])
@@ -270,10 +272,13 @@ if __name__ == '__main__':
             final_box = list()
             final_words = list()
             final_words_score = list()
+            ### for each word detected
             for n in range(new_boxes.shape[0]):
                 word = words[n]
+                ### if the word is less than three characters long, skip over it (throw it out)
                 if len(word) < 3:
                     continue
+                ### otherwise, if it contains (a number or symbol) and has a good score, include it
                 if (contain_num(word) or contain_symbol(word)) and words_score[n] > cfg.word_score:
                     final_box.append(new_boxes[n])
                     final_words.append(words[n])
@@ -281,6 +286,7 @@ if __name__ == '__main__':
                     # symbol_or_num = 1
                     continue
 
+                ### otherwise, try and match it to something in the vocabulary
                 distance = list()
                 score = words_score[n]
                 for cell in generic_vocs:
@@ -291,29 +297,35 @@ if __name__ == '__main__':
                         score = 1.1
                         #    break
                 ind = int(np.argmin(np.array(distance)))
+                ### if it has a low score or is far away from all words, throw it out
                 if (distance[ind] > 1 or score < 0.9):
                     continue
                 # if (distance[ind] > 3 or score < 0.9) and has_symbol==1:
                 #	continue
+                ### otherwise, add it
                 final_box.append(new_boxes[n])
                 final_words.append(generic_vocs[ind])
                 final_words_score.append(score)
 
+            ### non-max suppression (to get rid of multiple bounding boxes)
             final_box = np.array(final_box).reshape(-1, 9)
             final_words = np.array(final_words)
             final_words_score = np.array(final_words_score)
             final_box[:, -1] = 2 * final_box[:, -1] + final_words_score
             keep_indices, temp_boxes = non_max_suppression(final_box, args.nms)
             keep_indices = np.int32(keep_indices)
-
-            temp_boxes = final_box[keep_indices]
+            temp_boxes = final_box[keep_indices] # terrible variable name, bc the temp_boxes are our final boxes
             temp_words = final_words[keep_indices]
 
+            ### bounds corners of each temp_box within the image
             for index in range(len(keep_indices)):
+                ### for each box
                 for i in range(4):
+                    ### bound the x-coord
                     temp_boxes[index][2 * i] = int(round(temp_boxes[index][2 * i]))
                     temp_boxes[index][2 * i] = max(0, temp_boxes[index][2 * i])
                     temp_boxes[index][2 * i] = min(w - 1, temp_boxes[index][2 * i])
+                    ### bound the y-coord
                     temp_boxes[index][2 * i + 1] = int(round(temp_boxes[index][2 * i + 1]))
                     temp_boxes[index][2 * i + 1] = max(0, temp_boxes[index][2 * i + 1])
                     temp_boxes[index][2 * i + 1] = min(h - 1, temp_boxes[index][2 * i + 1])
@@ -328,9 +340,10 @@ if __name__ == '__main__':
             colors = plt.cm.hsv(np.linspace(0, 1, 21)).tolist()
             for n in range(len(temp_boxes)):
                 coords = np.reshape(temp_boxes[n, 0:8], (-1, 2))
+                print(coords) ### prints out the formatted bounding box coordinates
                 currentAxis.add_patch(plt.Polygon(coords, fill=False, edgecolor=colors[0], linewidth=2))
-                currentAxis.text(coords[0][0], coords[0][1], temp_words[n],
-                                 bbox={'facecolor': (1, 0, 0), 'alpha': 0.5})
+                # currentAxis.text(coords[0][0], coords[0][1], temp_words[n],
+                                 # bbox={'facecolor': (1, 0, 0), 'alpha': 0.5})
 
             plt.show()
 
