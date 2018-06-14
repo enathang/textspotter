@@ -247,12 +247,15 @@ if __name__ == '__main__':
             ### detect bounding boxes and decoder features
             det_bboxes, det_bboxes_prob, decoder_rec = forward_iou(im, net_iou, image_resize_length, mask_threshold)
             ### truncates/regresses bboxes, gets words and word scores
-            boxes_k, words_k, words_score_k = forward_reg(decoder_rec, net_rec, det_bboxes, cfg.recog_th)
+            boxes_k = det_bboxes[:].copy().tolist()
+            #boxes_k, words_k, words_score_k = forward_reg(decoder_rec, net_rec, det_bboxes, cfg.recog_th)
             ### if there are new boxes and words, add them to a list of potential boxes/words
             if len(boxes_k) > 0:
                 new_boxes = np.concatenate([new_boxes, np.array(boxes_k)], axis=0)
+                '''
                 words = np.concatenate([words, np.array(words_k)])
                 words_score = np.concatenate([words_score, np.array(words_score_k)])
+                '''
 
 
         ### if there are no boxes/words, terminate
@@ -265,18 +268,23 @@ if __name__ == '__main__':
         else:
             new_boxes = np.array(new_boxes)
             new_boxes = np.reshape(new_boxes, [-1,9])
+            '''
             words = np.array(words)
             words_score = np.array(words_score)
             assert new_boxes.shape[1] == 9
             assert len(new_boxes) == len(words)
             assert len(new_boxes) == len(words_score)
+            '''
 
 
             final_box = list()
+            '''
             final_words = list()
             final_words_score = list()
+            '''
             ### for each word detected
             for n in range(new_boxes.shape[0]):
+                '''
                 word = words[n]
                 ### if the word is less than three characters long, skip over it (throw it out)
                 if len(word) < 3:
@@ -306,23 +314,26 @@ if __name__ == '__main__':
                 # if (distance[ind] > 3 or score < 0.9) and has_symbol==1:
                 #	continue
                 ### otherwise, add it
+                '''
                 final_box.append(new_boxes[n])
+                '''
                 final_words.append(generic_vocs[ind])
                 final_words_score.append(score)
+                '''
 
             ### non-max suppression (to get rid of multiple bounding boxes)
             final_box = np.array(final_box).reshape(-1, 9)
+            '''
             final_words = np.array(final_words)
             final_words_score = np.array(final_words_score)
-            print("final box before")
-            print(final_box)
-            final_box[:, -1] = 2 * final_box[:, -1] + final_words_score # need final_words_score for non_max
-            print("final box after")
-            print(final_box)
+            '''
+            # final_box[:, -1] = 2 * final_box[:, -1] + final_words_score # need final_words_score for non_max
             keep_indices, temp_boxes = non_max_suppression(final_box, args.nms)
             keep_indices = np.int32(keep_indices)
             temp_boxes = final_box[keep_indices] # terrible variable name, bc the temp_boxes are our final boxes
+            '''
             temp_words = final_words[keep_indices]
+            '''
 
             ### bounds corners of each temp_box within the image
             for index in range(len(keep_indices)):
@@ -338,6 +349,7 @@ if __name__ == '__main__':
                     temp_boxes[index][2 * i + 1] = min(h - 1, temp_boxes[index][2 * i + 1])
 
             out_name = os.path.join(args.save_dir, 'res_' + image_id + '.txt')
+            temp_words = temp_boxes
             write2txt_icdar15_e2e(out_name, temp_boxes, temp_words)
 
             ### show results
