@@ -126,14 +126,17 @@ def forward_iou(im, net_iou, resize_length, mask_th):
     net_iou.blobs['fcn_th'].data[...] = fcn_th_blob
     ### determine bboxes
     net_iou.forward()
-
     det_bboxes = net_iou.blobs['rois'].data[:, 1:].copy()
+
+    # print("score data")
+    # print(len(net_iou.blobs['score_4s_softmax'].data[0][0][0])) # 1 x 2 x 128/312/272/256 x 128/560/480/448
 
     det_bboxes[:, :8:2] = det_bboxes[:, :8:2] * scale_w
     det_bboxes[:, 1:8:2] = det_bboxes[:, 1:8:2] * scale_h
     ### determine decoder info
     decoder_reg = net_iou.blobs['decoder'].data
-    return det_bboxes, decoder_reg
+    det_bboxes_prob = det_bboxes[:, 8] # det_bboxes 1-8 contains x or y coords and 9 contains prob(?)
+    return det_bboxes, det_bboxes_prob, decoder_reg
 
 
 
@@ -144,6 +147,7 @@ def forward_reg(decoder_rec, net_rec, det_bboxes, recog_th=0.85):
     det_num = det_bboxes.shape[0]
     if not (det_bboxes > 0).any():
         det_num = 0
+    ### for every bbox, calculate the score 
     for i in range(det_num):
         previous_words = []
         score = []
@@ -164,9 +168,10 @@ def forward_reg(decoder_rec, net_rec, det_bboxes, recog_th=0.85):
                 previous_words.append(ind)
                 score.append(res_probs[ind])
 
+        ### if avg score is > threshold, keep the box
         if len(score) > 0:
             print float(sum(score)) / len(score), vec2word(previous_words, dicts)
-            if float(sum(score)) / len(score) < recog_th:
+            if float(sum(score)) / len(score) < recog_th: # 0.85
                 continue
             tmp = det_bboxes[i].copy().tolist()
             # tmp[-1]+=float(sum(score)) / len(score) * 2
@@ -225,7 +230,7 @@ if __name__ == '__main__':
     generic_vocs = load_dict(generic_voc_file)
     dicts = build_voc('./dicts/dict.txt')
 
-    ### do a forward pass of every image
+    ### do a forward pass on every image
     for ind, image_name in enumerate(imgs_files):
         new_boxes = np.zeros((0, 9))
         words = np.zeros(0)
@@ -240,9 +245,7 @@ if __name__ == '__main__':
             image_resize_length = scales[k]
             mask_threshold = thresholds[k]
             ### detect bounding boxes and decoder features
-            det_bboxes, decoder_rec = forward_iou(im, net_iou, image_resize_length, mask_threshold)
-            det_num = det_bboxes.shape[0]
-            #new_boxes, words, words_score = forward_reg(decoder_rec, net_rec, det_bboxes, cfg.recog_th)
+            det_bboxes, det_bboxes_prob, decoder_rec = forward_iou(im, net_iou, image_resize_length, mask_threshold)
             ### truncates/regresses bboxes, gets words and word scores
             boxes_k, words_k, words_score_k = forward_reg(decoder_rec, net_rec, det_bboxes, cfg.recog_th)
             ### if there are new boxes and words, add them to a list of potential boxes/words
@@ -311,7 +314,11 @@ if __name__ == '__main__':
             final_box = np.array(final_box).reshape(-1, 9)
             final_words = np.array(final_words)
             final_words_score = np.array(final_words_score)
-            final_box[:, -1] = 2 * final_box[:, -1] + final_words_score
+            print("final box before")
+            print(final_box)
+            final_box[:, -1] = 2 * final_box[:, -1] + final_words_score # need final_words_score for non_max
+            print("final box after")
+            print(final_box)
             keep_indices, temp_boxes = non_max_suppression(final_box, args.nms)
             keep_indices = np.int32(keep_indices)
             temp_boxes = final_box[keep_indices] # terrible variable name, bc the temp_boxes are our final boxes
