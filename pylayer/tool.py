@@ -39,7 +39,7 @@ def build_voc(voc_file):
 
 def is_image(file_name):
     ext = os.path.splitext(file_name)[1].lower()[1:]
-    return ext == "jpg" or ext == "JPG"
+    return ext == "jpg" or ext == "JPG" or ext == "tiff" or ext == "TIFF"
 
 def vec2word(vec, dicts):
     tmp = ''
