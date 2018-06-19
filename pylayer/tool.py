@@ -225,16 +225,14 @@ def load_dict(dict_file):
 #
 
 
-def write2txt_icdar15_e2e(file_name, boxes, words):
+def write2txt_icdar15_e2e(file_name, boxes):
     f = open(file_name, 'w')
     det_num = boxes.shape[0]
-    words_num = len(words)
-    assert det_num == words_num
     if det_num == 0:
         f.close()
         return
     for i in range(det_num):
-        f.write('%d,%d,%d,%d,%d,%d,%d,%d,%s\r\n' % (boxes[i,0],boxes[i,1],boxes[i,2],boxes[i,3],boxes[i,4],boxes[i,5],boxes[i,6],boxes[i,7], words[i]))
+        f.write('%d,%d,%d,%d,%d,%d,%d,%d\r\n' % (boxes[i,0],boxes[i,1],boxes[i,2],boxes[i,3],boxes[i,4],boxes[i,5],boxes[i,6],boxes[i,7]))
     f.close()
 
 
