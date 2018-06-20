@@ -29,7 +29,6 @@ def parse_args():
         default='./models/text_detection.pt',
         help='prototxt file for detection',
         type=str)
-
     parser.add_argument(
         '--img',
         dest='img',
@@ -51,7 +50,13 @@ def parse_args():
         help='multiscales for testing',
         type=str
     )
-
+    parser.add_argument(
+        '--tile-size',
+        dest='tile_size',
+        default='1024',
+        help='size of tiles',
+        type=int
+    )
     parser.add_argument(
         '--nms',
         dest='nms',
@@ -71,47 +76,89 @@ def parse_args():
     return args
 
 
-
-def forward_iou(im, net_iou, resize_length, mask_th, tile_size):
-    ### resize everything
-    h, w, c = im.shape
-    scale = max(h, w) / float(resize_length)
-
-    image_resize_height = int(round(h / scale / 32) * 32)
-    image_resize_width = int(round(w / scale / 32) * 32)
-    scale_h = float(h) / image_resize_height
-    scale_w = float(w) / image_resize_width
-    im = cv2.resize(im, (image_resize_width, image_resize_height))
-    # change im.shape to be tile size
-    # tile image
-    im = np.asarray(im, dtype=np.float32)
-    im = im - cfg.mean_val
-    im = np.transpose(im, (2, 0, 1))
-    im = im[np.newaxis, :]
-
-    net_iou.blobs['data'].reshape(*im.shape)
-    net_iou.blobs['data'].data[...] = im
+def forward_pass(network, tile, mask_th):
+    network.blobs['data'].reshape(*tile.shape)
+    network.blobs['data'].data[...] = tile
 
     fcn_th_blob = np.zeros((1, 1), dtype=np.float32)
     fcn_th_blob[0, 0] = mask_th
-    net_iou.blobs['fcn_th'].reshape(*fcn_th_blob.shape)
-    net_iou.blobs['fcn_th'].data[...] = fcn_th_blob
+    network.blobs['fcn_th'].reshape(*fcn_th_blob.shape)
+    network.blobs['fcn_th'].data[...] = fcn_th_blob
 
     ### determine bboxes
-    net_iou.forward()
-    bboxes = net_iou.blobs['rois'].data[:, 1:].copy()
-    bboxes[:, :8:2] = bboxes[:, :8:2] * scale_w
-    bboxes[:, 1:8:2] = bboxes[:, 1:8:2] * scale_h
+    network.forward()
+    bboxes = network.blobs['rois'].data[:, 1:].copy()
 
     ### determine probability of bboxes
     bboxes_prob = bboxes[:, 8] # bboxes 1-8 contains x or y coords and 9 contains prob
     return bboxes, bboxes_prob
 
+
+def getTileCoords(im, image_resize_width, image_resize_height, tile_size):
+    x_coords = list()
+    y_coords = list()
+    for n in range(int(np.floor(image_resize_width/tile_size)*2)):
+        x_coords.append(n*tile_size/2)
+    for n in range(int(np.floor(image_resize_height/tile_size)*2)):
+        y_coords.append(n*tile_size/2)
+
+    x_coords.append(image_resize_width-tile_size-1)
+    y_coords.append(image_resize_height-tile_size-1)
+    return x_coords, y_coords
+    
+
+def detect_bboxes(im, network, resize_length, mask_th, tile_size):
+    ### resize everything
+    h, w, c = im.shape
+    scale = max(h, w) / float(resize_length)
+
+    image_resize_height = int(round(h / scale / 32) * 32) # desired height
+    image_resize_width = int(round(w / scale / 32) * 32)
+    # input()
+    scale_h = float(h) / image_resize_height # scale factors
+    scale_w = float(w) / image_resize_width
+    im = cv2.resize(im, (image_resize_width, image_resize_height))
+    im = np.asarray(im, dtype=np.float32)
+    im = im - cfg.mean_val
+    im = np.transpose(im, (2, 0, 1))
+    im = im[np.newaxis, :]
+    
+    bboxes = list()
+    bboxes_prob = list()
+    tile_x_coords, tile_y_coords = getTileCoords(im, image_resize_width, image_resize_height, tile_size) # get tile coords
+
+    '''
+    # print out tile coords
+    for x in tile_x_coords:
+        for y in tile_y_coords:
+            print "x: ",x*," ", (x+tile_size)*scale_w," y: ",y*scale_h," ",(y+tile_size)*scale_h
+    input()
+    '''
+
+    for x in tile_x_coords:
+        for y in tile_y_coords:
+            # print "x: ",x*scale_w," ", (x+tile_size)*scale_w," y: ",y*scale_h," ",(y+tile_size)*scale_h
+            tile = im[:,:,y:y+tile_size,x:x+tile_size] # get tile
+            tile_bboxes, tile_bboxes_prob = forward_pass(network, tile, mask_th) # run tile
+            tile_bboxes[:, :8:2] += x # undo transformation on boxes
+            tile_bboxes[:, 1:8:2] += y
+            tile_bboxes[:, :8:2] = tile_bboxes[:, :8:2] * scale_w
+            tile_bboxes[:, 1:8:2] = tile_bboxes[:, 1:8:2] * scale_h
+            bboxes.extend(np.array(tile_bboxes))
+            bboxes_prob.extend(np.array(tile_bboxes_prob))
+
+    final_bboxes = list()
+    for n in range(len(bboxes)):
+        if bboxes[n][8] > 0.15:
+            final_bboxes.append(bboxes[n])
+
+    return final_bboxes, bboxes_prob
+
+
 def displayImageWithBoxes(im, boxes):
     plt.imshow(im)
     currentAxis = plt.gca()
     colors = plt.cm.hsv(np.linspace(0, 1, 21)).tolist()
-    print boxes
     for n in range(len(boxes)):
         coords = np.reshape(boxes[n, 0:8], (-1, 2))
         currentAxis.add_patch(plt.Polygon(coords, fill=False, edgecolor=colors[0], linewidth=2))
@@ -134,6 +181,7 @@ def boundBoxCoords(boxes):
 def postProcessBoxes(boxes):
     boxes = np.array(boxes)
     boxes = np.reshape(boxes, [-1,9])
+    
 
     ### non-max suppression
     boxes = np.array(boxes).reshape(-1, 9)
@@ -169,6 +217,7 @@ if __name__ == '__main__':
         assert False, 'please put model and prototxts in ./model/'
 
     imgs_files = retrieveImages(args.img)
+    tile_size = args.tile_size
 
     if not os.path.exists(args.save_dir):
         os.mkdir(args.save_dir)
@@ -176,7 +225,7 @@ if __name__ == '__main__':
     caffe.set_mode_gpu()
     caffe.set_device(0)
 
-    ### create neural nets
+    ### create neural net
     net_iou = caffe.Net(args.prototxt, args.weight, caffe.TEST)
     thresholds = [float(_) for _ in args.thresholds.strip().split(',')]
     scales = [int(_) for _ in args.scales.strip().split(',')]
@@ -185,20 +234,24 @@ if __name__ == '__main__':
         'the length of thresholds and scales should be equal'
 
     for ind, image_name in enumerate(imgs_files):
+        # setup
         new_boxes = np.zeros((0, 9))
         image_id = image_name.split('/')[-1].split('.')[0]
         print '%d / %d: ' % (ind+1, len(imgs_files)), image_name
         im = cv2.imread(image_name)
         h, w, c = im.shape
 
-        for k in range(len(scales)):
+        # detect boxes
+        for k in range(len(scales)): # TODO: change so scales is dependant on max(w, h)*some constant
             image_resize_length = scales[k]
             mask_threshold = thresholds[k]
-            det_bboxes, det_bboxes_prob = forward_iou(im, net_iou, image_resize_length, mask_threshold, 0)
-            boxes_k = det_bboxes[:].copy().tolist()
-            if len(boxes_k) > 0:
-                new_boxes = np.concatenate([new_boxes, np.array(boxes_k)], axis=0)
+            # print "tile size ", tile_size
+            bboxes, det_bboxes_prob = detect_bboxes(im, net_iou, image_resize_length, mask_threshold, tile_size)
+            if len(bboxes) > 0:
+                new_boxes = np.concatenate([new_boxes, np.array(bboxes)], axis=0)
+            print "Done with scale {} out of {}".format(k, len(scales))
 
+        # process boxes
         if len(new_boxes) == 0:
             out_name = os.path.join(args.save_dir, 'res_' + image_id + '.txt')
             new_boxes = np.zeros((0, 8))
