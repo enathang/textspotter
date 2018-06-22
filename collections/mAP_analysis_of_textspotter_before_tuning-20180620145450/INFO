@@ -1,0 +1,25 @@
+COLLECTION
+
+Test collection for mAP detection accuracy of textspotter on historical maps trained on only general images
+
+
+AUTHOR
+
+Nathan Gifford
+
+
+SUMMARY
+
+This collection takes the 30+ labeled .tiff historical maps, runs the textspotter detection on them, and then uses mAP to determine recall, precision, and fScore scores (comparing predicted and actual bounding boxes). These scores are used to determine initial accuracy of textspotter before training.
+
+Errors currently on:
+D0008-3891001.tiff  
+D0047-0936019.tiff
+
+
+PURPOSE
+
+Determine initial accuracy of textspotter before fine-tuning
+
+
+SEE ALSO

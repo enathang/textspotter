@@ -1,0 +1,11 @@
+# Default target for generating data.
+collection:
+	even:
+		cd src ; python driver.py --img=imgs/D0006-0285025.tiff --scales-ms=1024,2048,4096 --tile-size=512 --thresholds-ms=0.001,0.001,0.001
+	odd:
+		cd src ; python driver.py --img=imgs/D0006-0285025.tiff --scales-ms=1024,2048,4096 --tile-size=512 --thresholds-ms=0.001,0.001,0.001
+
+
+clean:
+	rm -r data # Avoid data/* in case there are too many entries
+	rm -rf bin
